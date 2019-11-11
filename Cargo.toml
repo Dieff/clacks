@@ -1,0 +1,18 @@
+[package]
+name = "clacks"
+version = "0.1.0"
+authors = ["Nick Dieff <nick.dieff@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+actix = "0.8.3"
+actix-web = "1.0.8"
+actix-web-actors = "1.0.2"
+chrono = "0.4.9"
+log = "0.4.8"
+env_logger = "0.7.1"
+graphql-parser = "0.2.3"
+dotenv = "0.15.0"
+diesel = { version = "1.4.3", features = ["mysql", "chrono", "r2d2"] }
+serde = "1.0.102"
+serde_json = "1.0.41"

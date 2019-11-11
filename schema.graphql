@@ -1,0 +1,45 @@
+type User {
+  id: ID!
+}
+
+type Message {
+  id: ID!
+  sender: User!
+  content: String!
+  channel: Channel!
+  sent_at: Int!
+}
+
+type Channel {
+  id: ID!
+  display_name: String!
+  users: [User]!
+  messages(last: ID, count: Int): Message
+  message_view(user_id: ID!, last: Int!, count: Int!): [MessageView]!
+}
+
+type MessageView {
+  user: User!
+  order: Int!
+  message: Message!
+  seen: Boolean!
+  time: Int
+}
+
+type Query {
+  unread_messages: [Message]!
+  me: User!
+}
+
+input CreateMessageInput {
+  content: String!
+  channel: ID!
+}
+
+type Mutation {
+  createMessage(input: CreateMessageInput): Message
+}
+
+type Subscription {
+  message(channel: ID): Message
+}

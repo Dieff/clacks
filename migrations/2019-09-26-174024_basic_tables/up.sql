@@ -1,0 +1,33 @@
+CREATE TABLE channels (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  display_name VARCHAR(150),
+  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMP NOT NULL DEFAULT NOW() ON UPDATE NOW()
+);
+
+CREATE TABLE channel_members (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  channel_id INT NOT NULL,
+  FOREIGN KEY (channel_id) REFERENCES channels (id),
+  user VARCHAR(200) NOT NULL,
+  user_role VARCHAR(50)
+);
+
+CREATE TABLE messages (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  sender VARCHAR(200) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMP NOT NULL DEFAULT NOW() ON UPDATE NOW(),
+  edited BOOLEAN DEFAULT 1,
+  channel_id INT NOT NULL,
+  FOREIGN KEY (channel_id) REFERENCES channels (id),
+  content LONGTEXT
+);
+
+CREATE TABLE message_views (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  message_id INT NOT NULL,
+  FOREIGN KEY (message_id) REFERENCES messages (id),
+  user VARCHAR(200) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW() ON UPDATE NOW()
+);

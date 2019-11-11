@@ -1,0 +1,12 @@
+.git
+target
+README.md
+.vscode
+.env
+.env-example
+.DS_Store
+.thumbsdb
+Dockerfile
+.dockerignore
+.gitignore
+docker-compose.yml

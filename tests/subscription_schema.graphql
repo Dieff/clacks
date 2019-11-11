@@ -1,0 +1,11 @@
+type Message {
+  id: ID!
+  content: String!
+  sender: ID!
+}
+
+type Query
+
+type Subscription {
+  newMessage: Message!
+}

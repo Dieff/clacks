@@ -1,0 +1,14 @@
+fragment Test on __Type {
+  name
+}
+
+fragment Test2 on User {
+  id
+  name
+  ...Test3
+}
+
+fragment Test3 on User {
+  birthday
+  picture
+}

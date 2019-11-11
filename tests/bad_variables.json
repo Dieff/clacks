@@ -1,0 +1,7 @@
+{
+  "query": "query Test($foo: String!, $bar: Integer = 6, $sham: Boolean) { baz(foo: $shoo) { name date @skip(if: $sham) message(bar: $bar) }}",
+  "variables": {
+    "foo": 100,
+    "sham": 12
+  }
+}

@@ -1,0 +1,15 @@
+version: "2.4"
+services:
+  db:
+    image: "mariadb"
+    environment:
+      MYSQL_DATABASE: "chat"
+      MYSQL_USER: "diesel"
+      MYSQL_PASSWORD: "test123"
+      MYSQL_RANDOM_ROOT_PASSWORD: "1"
+    ports:
+      - "3306:3306"
+    volumes:
+      - "db_data:/var/lib/mysql"
+volumes:
+  db_data:
