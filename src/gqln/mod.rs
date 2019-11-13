@@ -1,7 +1,6 @@
 use graphql_parser::{parse_query, query, query::Value as GqlValue, schema};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::collections::BTreeMap;
-use std::fmt;
 
 mod execution;
 use execution::GqlRunningQuery;
@@ -11,25 +10,21 @@ mod resolver_creation;
 mod base_types;
 pub use base_types::*;
 
-#[derive(Default, Clone)]
-pub struct GqlSchema<C> {
-  objects: BTreeMap<String, schema::ObjectType>,
-  enums: BTreeMap<String, schema::EnumType>,
-  directives: BTreeMap<String, schema::DirectiveDefinition>,
-  input_types: BTreeMap<String, schema::InputObjectType>,
-  resolvers: BTreeMap<String, BTreeMap<String, Resolver<C>>>,
+#[derive(Clone, Debug, Default)]
+pub struct SchemaTypes {
+  pub objects: BTreeMap<String, schema::ObjectType>,
+  pub enums: BTreeMap<String, schema::EnumType>,
+  pub directives: BTreeMap<String, schema::DirectiveDefinition>,
+  pub input_types: BTreeMap<String, schema::InputObjectType>,
 }
 
-impl<C: 'static> GqlSchema<C> {
-  pub fn new(doc: schema::Document) -> SchemaResult<Self> {
+impl SchemaTypes {
+  fn new(doc: schema::Document) -> Self {
     let mut objects = BTreeMap::new();
     let mut enums = BTreeMap::new();
     let mut directives = BTreeMap::new();
     let mut input_types = BTreeMap::new();
-
-    let defs = doc.definitions.clone();
-
-    for def in defs {
+    for def in doc.definitions {
       match def {
         schema::Definition::TypeDefinition(t_def) => match t_def {
           schema::TypeDefinition::Object(obj) => {
@@ -50,14 +45,45 @@ impl<C: 'static> GqlSchema<C> {
       }
     }
 
-    if !objects.contains_key("Query") {
-      return Err(GqlSchemaErr::MissingType("Query".to_owned()));
-    }
-    let mut schema = GqlSchema {
+    SchemaTypes {
       objects,
       enums,
       directives,
       input_types,
+    }
+  }
+
+  fn get_object<'a>(&'a self, on_type: &str) -> Result<&'a schema::ObjectType, GqlQueryErr> {
+    self
+      .objects
+      .get(on_type)
+      .ok_or(GqlQueryErr::Type(QueryValidationError::new(
+        format!("Could not find type {}", on_type),
+        "Type".to_owned(),
+      )))
+  }
+}
+
+#[derive(Default, Clone, Debug)]
+pub struct GqlSchema<C> {
+  internal_types: SchemaTypes,
+  external_types: SchemaTypes,
+  resolvers: BTreeMap<String, BTreeMap<String, Resolver<C>>>,
+}
+
+impl<C> GqlSchema<C> {
+  pub fn new(doc: schema::Document) -> SchemaResult<Self> {
+    let external_types = SchemaTypes::new(doc);
+    let internal_types = SchemaTypes::new(
+      graphql_parser::parse_schema(include_str!("./introspection_defs.graphql")).unwrap(),
+    );
+
+    if !external_types.objects.contains_key("Query") {
+      return Err(GqlSchemaErr::MissingType("Query".to_owned()));
+    }
+    let mut schema = GqlSchema {
+      internal_types,
+      external_types,
       resolvers: BTreeMap::new(),
     };
 
@@ -110,10 +136,10 @@ impl<C: 'static> GqlSchema<C> {
 
   pub fn add_resolvers(&mut self, resolvers: Vec<Resolver<C>>) -> SchemaResult<()> {
     for resolver in resolvers {
-      if !self.objects.contains_key(&resolver.on_type) {
+      if !self.external_types.objects.contains_key(&resolver.on_type) {
         return Err(GqlSchemaErr::InvalidResolver);
       } else {
-        let obj = self.objects.get(&resolver.on_type).unwrap();
+        let obj = self.external_types.objects.get(&resolver.on_type).unwrap();
         let mut found: bool = false;
         for f in &obj.fields {
           if f.name == resolver.field {
@@ -147,62 +173,51 @@ impl<C: 'static> GqlSchema<C> {
     )
   }
 
-  // TODO: increase ergonomics
-  /*
-  fn get_field_definition(
-    &self,
-    type_name: &str,
-    field_name: &str,
-  ) -> Result<schema::Field, ResolutionErr> {
-    let gql_type = self
-      .objects
-      .get(type_name)
-      .ok_or(ResolutionErr::QueryValidation(GqlQueryErr::Field(
-        QueryValidationError::new(
-          format!("could not find type {}", type_name),
-          type_name.to_owned(),
-          None,
-        ),
-      )))?;
-
-    let mut fields: HashMap<String, schema::Field> = HashMap::new();
-    for field in &gql_type.fields {
-      fields.insert(field.name.to_owned(), field.to_owned());
+  fn get_any_object_type<'a>(
+    &'a self,
+    on_type: &str,
+  ) -> Result<&'a schema::ObjectType, GqlQueryErr> {
+    let inner_res = self.internal_types.get_object(on_type);
+    if inner_res.is_ok() {
+      return inner_res;
     }
-    Ok(
-      fields
-        .get(type_name)
-        .ok_or(ResolutionErr::QueryValidation(GqlQueryErr::Field(
-          QueryValidationError::new(
-            format!("could not find field {} on type {}", field_name, type_name),
-            type_name.to_owned(),
-            None,
-          ),
-        )))?
-        .to_owned(),
-    )
+    self.external_types.get_object(on_type)
   }
 
-  fn validate_arg_type(&self) {
-    //
+  fn validate_directive(
+    &self,
+    name: &str,
+    args: &Vec<(String, GqlValue)>,
+  ) -> Result<(), GqlQueryErr> {
+    let directive: &schema::DirectiveDefinition;
+    if let Some(d) = self.internal_types.directives.get(name) {
+      directive = d
+    } else {
+      directive = self
+        .external_types
+        .directives
+        .get(name)
+        .ok_or(GqlQueryErr::Directive(QueryValidationError::new(
+          format!("Invalid directive {}", name),
+          "Directive".to_owned(),
+        )))?;
+    }
+    for arg_def in &directive.arguments {
+      let arg_val = args
+        .iter()
+        .find(|(name, _)| name == &arg_def.name)
+        .unwrap_or(&("".to_owned(), GqlValue::Null))
+        .1
+        .clone();
+      execution::naive_check_var_type(&arg_def.value_type, &arg_val);
+    }
+    Ok(())
   }
 
-  fn validate_arguments(
-    &self,
-    gql_type: &str,
-    field_name: &str,
-    arguments: &Vec<GqlValue>,
-  ) -> bool {
-    if let Ok(field_def) = self.get_field_definition(gql_type, field_name) {
-      //
-    }
-    false
-  }*/
-
-  fn get_resolution_value(
+  fn get_resolution_value_next(
     &self,
     on_type: &str,
-    field: &query::Field,
+    field: &SimpleField,
     context: &mut C,
     data: &BTreeMap<String, query::Value>,
   ) -> ResResult {
@@ -212,7 +227,6 @@ impl<C: 'static> GqlSchema<C> {
       bmap.insert("kind".to_owned(), GqlValue::Enum("OBJECT".to_owned()));
       return Ok(ResolutionReturn::Type(("__Type".to_owned(), bmap)));
     }
-    //println!("{}.{}", on_type, field.name);
     if field.name == "__typename" {
       return Ok(ResolutionReturn::Scalar(query::Value::String(
         on_type.to_owned(),
@@ -222,16 +236,17 @@ impl<C: 'static> GqlSchema<C> {
     (resolver.resolve)(data, field.arguments.clone(), context, &self)
   }
 
-  fn resolve_loop(
+  fn resolve_loop_next(
     &self,
     context: &mut C,
-    initial_fields: Vec<query::Field>,
-    query_info: &GqlRunningQuery,
-    initial_type: &str,
+    query: &PendingQuery,
     initial_root: Option<GqlRoot>,
   ) -> Result<BTreeMap<String, GqlValue>, ResolutionErr> {
-    let mut initial_res =
-      ResolutionContext::new(initial_type.to_owned(), "".to_owned(), initial_fields);
+    let mut initial_res = ResolutionContext::new(
+      query.on_type.to_owned(),
+      "".to_owned(),
+      query.fields.clone(),
+    );
     if let Some(root) = initial_root {
       initial_res.data = root;
     }
@@ -247,20 +262,22 @@ impl<C: 'static> GqlSchema<C> {
         if res_ctx.data.contains_key(&field.name) {
           continue;
         }
-        let value = self.get_resolution_value(&res_ctx.cur_type, &field, context, &res_ctx.data)?;
+        let value =
+          self.get_resolution_value_next(&res_ctx.cur_type, &field, context, &res_ctx.data)?;
 
         match value {
           ResolutionReturn::Scalar(inner_val) => {
             res_ctx.data.insert(field.name.to_owned(), inner_val);
           }
           ResolutionReturn::Type((gql_type, initial_field_results)) => {
+            dbg!(&gql_type);
             let mut ctx = ResolutionContext::new(
               gql_type.to_owned(),
               field.name.to_owned(),
-              query_info.fields_from_selectionset(&field.selection_set, &gql_type)?,
+              field.fields.to_owned(),
             );
             ctx.data = initial_field_results;
-            stack.push(res_ctx.clone());
+            stack.push(res_ctx);
             stack.push(ctx);
             continue 'outer;
           }
@@ -276,20 +293,23 @@ impl<C: 'static> GqlSchema<C> {
             res_ctx
               .data
               .insert(field.name.clone(), GqlValue::List(vec![]));
-            stack.push(res_ctx.clone());
             stack.extend(
               initial_values
                 .into_iter()
                 .map(|t| -> GqlExecResult<ResolutionContext> {
-                  let fields =
-                    query_info.fields_from_selectionset(&field.selection_set, &gql_type)?;
-                  let mut rctx =
-                    ResolutionContext::new(gql_type.to_owned(), field.name.clone(), fields);
+                  let mut rctx = ResolutionContext::new(
+                    gql_type.to_owned(),
+                    field.name.clone(),
+                    field.fields.clone(),
+                  );
                   rctx.set_list(parent_index, t);
                   Ok(rctx)
                 })
                 .collect::<GqlExecResult<Vec<ResolutionContext>>>()?,
             );
+            // we insert it here so as to avoid cloning
+            // since res_ctx's element are needed in the closure
+            stack.insert(parent_index, res_ctx);
             continue 'outer;
           }
         }
@@ -319,9 +339,72 @@ impl<C: 'static> GqlSchema<C> {
     Ok(BTreeMap::new())
   }
 
+  fn process_field(
+    &self,
+    field: &query::Field,
+    on_type: &str,
+    exec: &GqlRunningQuery,
+  ) -> Result<Vec<SimpleField>, GqlQueryErr> {
+    let fields = exec.fields_from_selectionset(&field.selection_set, on_type)?;
+    let full_type = self.get_any_object_type(on_type)?;
+    let field_type: query::Type;
+    if field.name == "__typename" {
+      field_type = query::Type::NamedType("String".to_owned());
+    } else if field.name == "__type" {
+      field_type = query::Type::NamedType("__Type".to_owned());
+    } else if field.name == "__schema" {
+      field_type = query::Type::NamedType("__Schema".to_owned());
+    } else {
+      field_type = full_type
+        .fields
+        .iter()
+        .find(|f| f.name == field.name)
+        .ok_or(GqlQueryErr::Field(QueryValidationError::new(
+          format!("Could not find field {} on type {}", field.name, on_type),
+          "Field".to_owned(),
+        )))?
+        .field_type
+        .clone();
+    }
+    let mut cur_type = field_type;
+    let final_type = loop {
+      match cur_type {
+        query::Type::NamedType(name) => {
+          break name;
+        }
+        query::Type::ListType(l) => {
+          cur_type = *l;
+        }
+        query::Type::NonNullType(l) => {
+          cur_type = *l;
+        }
+      }
+    };
+    fields
+      .into_iter()
+      .map(|f| {
+        for d in &f.directives {
+          self.validate_directive(&d.name, &d.arguments)?;
+        }
+        Ok(SimpleField {
+          name: f.name.clone(),
+          directives: f.directives.clone(),
+          arguments: f.arguments.clone().into_iter().fold(
+            BTreeMap::new(),
+            |mut map, (name, val)| {
+              map.insert(name, val);
+              map
+            },
+          ),
+          fields: self.process_field(&f, &final_type, exec)?,
+        })
+      })
+      .collect::<Result<Vec<SimpleField>, GqlQueryErr>>()
+  }
+
   pub fn resolve(
     &self,
-    mut context: C,
+    context: &mut C,
     req: GqlRequest,
     root: Option<GqlRoot>,
   ) -> Result<JsonValue, ResolutionErr> {
@@ -340,20 +423,38 @@ impl<C: 'static> GqlSchema<C> {
 
     let mut data: JsonMap<String, JsonValue> = JsonMap::new();
     for queree in queries {
-      // key for the query in the final data map
-      for (key, val) in self
-        .resolve_loop(
-          &mut context,
-          queree.initial_fields,
-          &query_info,
-          &query_info.starting_type,
-          root.clone(),
-        )?
-        .into_iter()
-      {
-        let jdata = execution::gql_to_json(val)
+      let pending_query = PendingQuery {
+        on_type: &query_info.starting_type,
+        fields: queree
+          .initial_fields
+          .clone()
+          .into_iter()
+          .map(|f| {
+            Ok(SimpleField {
+              name: f.name.clone(),
+              arguments: f
+                .arguments
+                .iter()
+                .fold(BTreeMap::new(), |mut map, (name, val)| {
+                  map.insert(name.to_owned(), val.to_owned());
+                  map
+                }),
+              directives: f.directives.clone(),
+              fields: self.process_field(&f, &query_info.starting_type, &query_info)?,
+            })
+          })
+          .collect::<Result<Vec<SimpleField>, GqlQueryErr>>()?,
+      };
+
+      let mut res = self.resolve_loop_next(context, &pending_query, root.clone())?;
+      for field in &pending_query.fields {
+        let val = res.get_mut(&field.name).unwrap();
+        // And extra fields that weren't requested are removed here
+        sparsify_return(val, &field);
+        // convert from GqlValue to JsonValue
+        let jdata = execution::gql_to_json(val.to_owned())
           .map_err(|_| ResolutionErr::QueryResult(format!("Could not encode result to JSON")))?;
-        data.insert(key, jdata);
+        data.insert(field.name.to_owned(), jdata);
       }
     }
 
@@ -361,28 +462,50 @@ impl<C: 'static> GqlSchema<C> {
   }
 }
 
-impl<C> fmt::Debug for GqlSchema<C> {
-  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    write!(
-      f,
-      "GqlSchema {{ objects: {:?}, enums: {:?}, input_types: {:?} }}",
-      self.objects, self.enums, self.input_types
-    )
+fn sparsify_return(val: &mut GqlValue, field: &SimpleField) {
+  if let GqlValue::Object(obj) = val {
+    let mut extra_keys = Vec::new();
+    for (key, mut val) in obj.iter_mut() {
+      match field.fields.iter().find(|f| f.name == *key) {
+        Some(field) => {
+          sparsify_return(&mut val, &field);
+        }
+        None => {
+          extra_keys.push(key.clone());
+        }
+      }
+    }
+    for key in extra_keys {
+      obj.remove(&key);
+    }
   }
 }
 
 #[derive(Clone, Debug)]
+struct SimpleField {
+  name: String,
+  directives: Vec<query::Directive>,
+  arguments: BTreeMap<String, GqlValue>,
+  fields: Vec<SimpleField>,
+}
+
+#[derive(Clone, Debug)]
+struct PendingQuery<'a> {
+  on_type: &'a str,
+  fields: Vec<SimpleField>,
+}
+
 struct ResolutionContext {
   cur_type: String,
   map_key: String,
-  fields: Vec<query::Field>,
+  fields: Vec<SimpleField>,
   field_res_progress: usize,
   data: BTreeMap<String, query::Value>,
   in_list: Option<usize>,
 }
 
 impl ResolutionContext {
-  fn new(cur_type: String, map_key: String, fields: Vec<query::Field>) -> Self {
+  fn new(cur_type: String, map_key: String, fields: Vec<SimpleField>) -> Self {
     ResolutionContext {
       cur_type,
       map_key,
@@ -402,7 +525,7 @@ impl ResolutionContext {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use serde_json::{from_str, to_string};
+  use serde_json::{from_str, json, to_string};
 
   #[test]
   fn simple_query() {
@@ -417,12 +540,12 @@ mod tests {
 
     type Context = String;
     let mut p_schema: GqlSchema<Context> = GqlSchema::new(doc).unwrap();
-    assert!(p_schema.objects.len() == 1);
-    assert!(p_schema.enums.len() == 0);
+    assert_eq!(p_schema.external_types.objects.len(), 1);
+    assert_eq!(p_schema.external_types.enums.len(), 0);
 
     fn resolve_query_message(
-      _root: &BTreeMap<String, query::Value>,
-      _args: Vec<(String, query::Value)>,
+      _root: &GqlRoot,
+      _args: GqlArgs,
       ctx: &mut Context,
       _r: &GqlSchema<Context>,
     ) -> ResResult {
@@ -435,7 +558,7 @@ mod tests {
 
     assert!(p_schema.add_resolvers(vec![r]).is_ok());
     let result = p_schema
-      .resolve("Hello world!".to_owned(), q_msg, None)
+      .resolve(&mut "Hello world!".to_owned(), q_msg, None)
       .unwrap();
     let expected = r#"
       {"message": "Hello world!"} 
@@ -458,7 +581,7 @@ mod tests {
     type Context = Vec<i8>;
     let p_schema: GqlSchema<Context> = GqlSchema::new(doc).unwrap();
 
-    let schema_data = p_schema.resolve(Vec::new(), q_msg, None).unwrap();
+    let schema_data = p_schema.resolve(&mut Vec::new(), q_msg, None).unwrap();
     if let JsonValue::Object(data) = schema_data {
       assert!(to_string(&JsonValue::Object(data)).is_ok());
     } else {
@@ -486,6 +609,7 @@ mod tests {
         root.get("content").unwrap().to_owned(),
       );
       bmap.insert("id".to_owned(), GqlValue::String(format!("{}", ctx)));
+      bmap.insert("jam".to_owned(), GqlValue::Boolean(false));
       Ok(ResolutionReturn::Type(("Message".to_owned(), bmap)))
     }
 
@@ -514,11 +638,13 @@ mod tests {
       "content".to_owned(),
       GqlValue::String("Hello world!".to_owned()),
     );
-    let res = schema.resolve(10, req, Some(initial_root)).unwrap();
-    if let JsonValue::Object(obj) = res {
-      assert!(obj.contains_key("newMessage"));
-    } else {
-      panic!("resolve did not return an object");
+    if let JsonValue::Object(obj) = schema.resolve(&mut 10, req, Some(initial_root)).unwrap() {
+      if let JsonValue::Object(new_msg) = obj.get("newMessage").unwrap() {
+        assert_eq!(new_msg.get("content"), Some(&json!("Hello world!")));
+        assert!(!new_msg.contains_key("jam"));
+        return;
+      }
     }
+    panic!("resolve did not return an object");
   }
 }

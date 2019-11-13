@@ -77,12 +77,12 @@ fn r_graphql(
     gql_ctx: web::Data<GqlRouteContext>,
     tracker: web::Data<Addr<ws_actors::ConnectionTracker>>,
 ) -> impl Responder {
-    let context = GqlContext::new(
+    let mut context = GqlContext::new(
         gql_ctx.db.clone(),
         "Asdf".to_owned(),
         tracker.get_ref().clone(),
     );
-    let gql_resp = gql_ctx.schema.resolve(context, payload.0, None);
+    let gql_resp = gql_ctx.schema.resolve(&mut context, payload.0, None);
     HttpResponse::Ok().json(GqlResponse::from(gql_resp))
 }
 
@@ -92,12 +92,12 @@ fn r_graphql_get(
     gql_ctx: web::Data<GqlRouteContext>,
     tracker: web::Data<Addr<ws_actors::ConnectionTracker>>,
 ) -> impl Responder {
-    let context = GqlContext::new(
+    let mut context = GqlContext::new(
         gql_ctx.db.clone(),
         "Asdf".to_owned(),
         tracker.get_ref().clone(),
     );
-    let gql_resp = gql_ctx.schema.resolve(context, payload.0, None);
+    let gql_resp = gql_ctx.schema.resolve(&mut context, payload.0, None);
     HttpResponse::Ok().json(GqlResponse::from(gql_resp))
 }
 

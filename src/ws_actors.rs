@@ -121,7 +121,7 @@ impl Handler<MsgWsDisconnected> for ConnectionTracker {
   type Result = ();
 
   fn handle(&mut self, msg: MsgWsDisconnected, ctx: &mut Self::Context) {
-    //self.connections -= 1;
+    self.connections = self.connections.saturating_sub(1);
     println!("{} clients are connected", self.connections);
   }
 }
@@ -131,14 +131,16 @@ impl Handler<MsgMessageCreated> for ConnectionTracker {
 
   fn handle(&mut self, msg: MsgMessageCreated, ctx: &mut Self::Context) {
     for sub in self.subs.values() {
-      let context = GqlContext::new(self.pool.clone(), "0".to_owned(), ctx.address());
+      let mut context = GqlContext::new(self.pool.clone(), "0".to_owned(), ctx.address());
       let mut root = GqlRoot::new();
-      root.insert("id".to_owned(), GqlValue::Null);
+      root.insert("id".to_owned(), GqlValue::String("test".to_owned()));
       root.insert(
-        "context".to_owned(),
+        "content".to_owned(),
         GqlValue::String(msg.content.to_owned()),
       );
-      let res = self.schema.resolve(context, sub.req.clone(), Some(root));
+      let res = self
+        .schema
+        .resolve(&mut context, sub.req.clone(), Some(root));
       sub
         .addr
         .do_send(MsgSubscriptionData::new("1".to_owned(), res));

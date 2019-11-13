@@ -1,10 +1,10 @@
 use super::*;
 
-const BUILTIN_SCALARS: &'static [&str] = &["String", "Boolean", "ID", "Int", "Float"];
+pub const BUILTIN_SCALARS: &'static [&str] = &["String", "Boolean", "ID", "Int", "Float"];
 
 pub fn r_type_desc<C>(
-  root: &BTreeMap<String, query::Value>,
-  _args: Vec<(String, query::Value)>,
+  root: &GqlRoot,
+  _args: GqlArgs,
   _ctx: &mut C,
   schema: &GqlSchema<C>,
 ) -> ResResult {
@@ -14,19 +14,19 @@ pub fn r_type_desc<C>(
         "Scalar type".to_owned(),
       )));
     }
-    if let Some(enum_def) = schema.enums.get(parent) {
+    if let Some(enum_def) = schema.external_types.enums.get(parent) {
       return match &enum_def.description {
         Some(desc) => Ok(ResolutionReturn::Scalar(query::Value::String(desc.clone()))),
         None => Ok(ResolutionReturn::Scalar(query::Value::Null)),
       };
     }
-    if let Some(object_def) = schema.objects.get(parent) {
+    if let Some(object_def) = schema.external_types.objects.get(parent) {
       return match &object_def.description {
         Some(desc) => Ok(ResolutionReturn::Scalar(query::Value::String(desc.clone()))),
         None => Ok(ResolutionReturn::Scalar(query::Value::Null)),
       };
     }
-    if let Some(input_def) = schema.input_types.get(parent) {
+    if let Some(input_def) = schema.external_types.input_types.get(parent) {
       return match &input_def.description {
         Some(desc) => Ok(ResolutionReturn::Scalar(query::Value::String(desc.clone()))),
         None => Ok(ResolutionReturn::Scalar(query::Value::Null)),
@@ -38,8 +38,8 @@ pub fn r_type_desc<C>(
 }
 
 pub fn r_type_ofkind<C>(
-  root: &BTreeMap<String, query::Value>,
-  _args: Vec<(String, query::Value)>,
+  root: &GqlRoot,
+  _args: GqlArgs,
   _ctx: &mut C,
   schema: &GqlSchema<C>,
 ) -> ResResult {
@@ -53,9 +53,9 @@ pub fn r_type_ofkind<C>(
         bmap.insert("name".to_owned(), GqlValue::String(name.clone()));
         if BUILTIN_SCALARS.contains(&name.as_str()) {
           bmap.insert("kind".to_owned(), GqlValue::Enum("SCALAR".to_owned()));
-        } else if schema.enums.contains_key(name) {
+        } else if schema.external_types.enums.contains_key(name) {
           bmap.insert("kind".to_owned(), GqlValue::Enum("ENUM".to_owned()));
-        } else if schema.objects.contains_key(name) {
+        } else if schema.external_types.objects.contains_key(name) {
           bmap.insert("kind".to_owned(), GqlValue::Enum("OBJECT".to_owned()));
         }
 
@@ -71,7 +71,7 @@ pub fn r_type_ofkind<C>(
 
 pub fn r_type_possibletypes<C>(
   root: &BTreeMap<String, query::Value>,
-  _args: Vec<(String, query::Value)>,
+  _args: GqlArgs,
   _ctx: &mut C,
   schema: &GqlSchema<C>,
 ) -> ResResult {
@@ -80,7 +80,7 @@ pub fn r_type_possibletypes<C>(
 
 pub fn r_type_enumvals<C>(
   root: &BTreeMap<String, query::Value>,
-  _args: Vec<(String, query::Value)>,
+  _args: GqlArgs,
   _ctx: &mut C,
   schema: &GqlSchema<C>,
 ) -> ResResult {
@@ -92,6 +92,7 @@ pub fn r_type_enumvals<C>(
       "ENUM" => {
         // the definition of the enum as parsed from the AST
         let en = schema
+          .external_types
           .enums
           .get(name)
           .ok_or(ResolutionErr::new_missing_type(name.as_str()))?;
@@ -122,7 +123,7 @@ pub fn r_type_enumvals<C>(
 
 pub fn r_type_interfaces<C>(
   root: &BTreeMap<String, query::Value>,
-  _args: Vec<(String, query::Value)>,
+  _args: GqlArgs,
   _ctx: &mut C,
   schema: &GqlSchema<C>,
 ) -> ResResult {
@@ -138,7 +139,7 @@ pub fn r_type_interfaces<C>(
 
 pub fn r_type_inputfields<C>(
   root: &BTreeMap<String, query::Value>,
-  _args: Vec<(String, query::Value)>,
+  _args: GqlArgs,
   _ctx: &mut C,
   schema: &GqlSchema<C>,
 ) -> ResResult {
@@ -146,7 +147,7 @@ pub fn r_type_inputfields<C>(
     (root.get("kind"), root.get("name"))
   {
     if kind == "INPUT_OBJECT" {
-      let input_obj_def = schema.input_types.get(name).unwrap();
+      let input_obj_def = schema.external_types.input_types.get(name).unwrap();
       let mut res = Vec::new();
       for field in &input_obj_def.fields {
         let mut bmap = BTreeMap::new();
@@ -199,9 +200,9 @@ fn convert_field_type<C>(schema: &GqlSchema<C>, field_type: query::Type) -> GqlO
       if BUILTIN_SCALARS.contains(&type_name.as_str()) {
         result.insert("kind".to_owned(), GqlValue::Enum("SCALAR".to_owned()));
       }
-      if schema.objects.contains_key(&type_name) {
+      if schema.external_types.objects.contains_key(&type_name) {
         result.insert("kind".to_owned(), GqlValue::Enum("OBJECT".to_owned()));
-      } else if schema.enums.contains_key(&type_name) {
+      } else if schema.external_types.enums.contains_key(&type_name) {
         result.insert("kind".to_owned(), GqlValue::Enum("ENUM".to_owned()));
       }
     }
@@ -223,13 +224,13 @@ fn value_to_string(val: &GqlValue) -> String {
 
 pub fn r_type_fields<C>(
   root: &BTreeMap<String, query::Value>,
-  _args: Vec<(String, query::Value)>,
+  _args: GqlArgs,
   _ctx: &mut C,
   schema: &GqlSchema<C>,
 ) -> ResResult {
   match (root.get("kind"), root.get("name")) {
     (Some(GqlValue::Enum(ref k)), Some(GqlValue::String(name))) if k == "OBJECT" => {
-      if let Some(def) = schema.objects.get(name.as_str()) {
+      if let Some(def) = schema.external_types.objects.get(name.as_str()) {
         return Ok(ResolutionReturn::TypeList((
           "__Field".to_owned(),
           def
@@ -261,7 +262,7 @@ pub fn r_type_fields<C>(
 
 pub fn r_field_args<C>(
   root: &BTreeMap<String, query::Value>,
-  _args: Vec<(String, query::Value)>,
+  _args: GqlArgs,
   _ctx: &mut C,
   schema: &GqlSchema<C>,
 ) -> ResResult {
@@ -269,6 +270,7 @@ pub fn r_field_args<C>(
     (root.get("name"), root.get("parentTypename"))
   {
     let obj_def = schema
+      .external_types
       .objects
       .get(type_name)
       .ok_or(ResolutionErr::new_missing_type(type_name))?;
@@ -327,34 +329,34 @@ fn schema_type(target_type: &str, schema: &BTreeMap<String, schema::ObjectType>)
 
 pub fn r_schema_qtype<C>(
   _root: &BTreeMap<String, query::Value>,
-  _args: Vec<(String, query::Value)>,
+  _args: GqlArgs,
   _ctx: &mut C,
   schema: &GqlSchema<C>,
 ) -> ResResult {
-  schema_type("Query", &schema.objects)
+  schema_type("Query", &schema.external_types.objects)
 }
 
 pub fn r_schema_subtype<C>(
   _root: &BTreeMap<String, query::Value>,
-  _args: Vec<(String, query::Value)>,
+  _args: GqlArgs,
   _ctx: &mut C,
   schema: &GqlSchema<C>,
 ) -> ResResult {
-  schema_type("Subscription", &schema.objects)
+  schema_type("Subscription", &schema.external_types.objects)
 }
 
 pub fn r_schema_muttype<C>(
   _root: &BTreeMap<String, query::Value>,
-  _args: Vec<(String, query::Value)>,
+  _args: GqlArgs,
   _ctx: &mut C,
   schema: &GqlSchema<C>,
 ) -> ResResult {
-  schema_type("Mutation", &schema.objects)
+  schema_type("Mutation", &schema.external_types.objects)
 }
 
 pub fn r_schema_directives<C>(
   _root: &BTreeMap<String, query::Value>,
-  _args: Vec<(String, query::Value)>,
+  _args: GqlArgs,
   _ctx: &mut C,
   _schema: &GqlSchema<C>,
 ) -> ResResult {
@@ -366,12 +368,12 @@ pub fn r_schema_directives<C>(
 
 pub fn r_schema_types<C>(
   _root: &BTreeMap<String, query::Value>,
-  _args: Vec<(String, query::Value)>,
+  _args: GqlArgs,
   _ctx: &mut C,
   schema: &GqlSchema<C>,
 ) -> ResResult {
   let mut res_items = Vec::new();
-  schema.objects.keys().for_each(|type_name| {
+  schema.external_types.objects.keys().for_each(|type_name| {
     let mut bmap = BTreeMap::new();
     bmap.insert(
       "name".to_owned(),
@@ -380,24 +382,28 @@ pub fn r_schema_types<C>(
     bmap.insert("kind".to_owned(), GqlValue::Enum("OBJECT".to_owned()));
     res_items.push(bmap);
   });
-  schema.input_types.keys().for_each(|type_name| {
-    let mut bmap = BTreeMap::new();
-    bmap.insert(
-      "name".to_owned(),
-      query::Value::String(type_name.to_owned()),
-    );
-    bmap.insert(
-      "kind".to_owned(),
-      query::Value::Enum("INPUT_OBJECT".to_owned()),
-    );
-    res_items.push(bmap);
-  });
+  schema
+    .external_types
+    .input_types
+    .keys()
+    .for_each(|type_name| {
+      let mut bmap = BTreeMap::new();
+      bmap.insert(
+        "name".to_owned(),
+        query::Value::String(type_name.to_owned()),
+      );
+      bmap.insert(
+        "kind".to_owned(),
+        query::Value::Enum("INPUT_OBJECT".to_owned()),
+      );
+      res_items.push(bmap);
+    });
   Ok(ResolutionReturn::TypeList(("__Type".to_owned(), res_items)))
 }
 
 pub fn r_query_schema<C>(
   _root: &BTreeMap<String, query::Value>,
-  _args: Vec<(String, query::Value)>,
+  _args: GqlArgs,
   _ctx: &mut C,
   _schema: &GqlSchema<C>,
 ) -> ResResult {
@@ -409,13 +415,14 @@ pub fn r_query_schema<C>(
 
 pub fn r_directive_args<C>(
   root: &BTreeMap<String, query::Value>,
-  _args: Vec<(String, query::Value)>,
+  _args: GqlArgs,
   _ctx: &mut C,
   schema: &GqlSchema<C>,
 ) -> ResResult {
   match root.get("name") {
     Some(GqlValue::String(name)) => {
       let def = schema
+        .external_types
         .directives
         .get(name)
         .ok_or(ResolutionErr::new_invalid_field("__Directive", name))?;
@@ -437,7 +444,7 @@ pub fn r_directive_args<C>(
 
 pub fn r_inputvalue_default<C>(
   root: &BTreeMap<String, query::Value>,
-  _args: Vec<(String, query::Value)>,
+  _args: GqlArgs,
   _ctx: &mut C,
   _schema: &GqlSchema<C>,
 ) -> ResResult {
@@ -449,14 +456,14 @@ pub fn r_inputvalue_default<C>(
 
 pub fn r_inputvalue_type<C>(
   root: &BTreeMap<String, query::Value>,
-  _args: Vec<(String, query::Value)>,
+  _args: GqlArgs,
   _ctx: &mut C,
   schema: &GqlSchema<C>,
 ) -> ResResult {
   if let (Some(GqlValue::String(my_name)), Some(GqlValue::String(parent_name))) =
     (root.get("name"), root.get("parentTypename"))
   {
-    if let Some(input_def) = schema.input_types.get(parent_name) {
+    if let Some(input_def) = schema.external_types.input_types.get(parent_name) {
       let field = input_def
         .fields
         .iter()
@@ -481,7 +488,7 @@ fn full_input_type_resolver<C>(value_type: &query::Type, schema: &GqlSchema<C>) 
         bmap.insert("kind".to_owned(), GqlValue::Enum("SCALAR".to_owned()));
       } else {
         // TODO: this should be reliable
-        let input_type = schema.input_types.get(name).unwrap();
+        let input_type = schema.external_types.input_types.get(name).unwrap();
         bmap.insert("kind".to_owned(), GqlValue::Enum("INPUT_OBJECT".to_owned()));
         bmap.insert("ofType".to_owned(), GqlValue::Null);
       }

@@ -37,6 +37,7 @@ pub enum GqlQueryErr {
   Fragment(QueryValidationError),
   Directive(QueryValidationError),
   Field(QueryValidationError),
+  Type(QueryValidationError),
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -123,10 +124,9 @@ pub enum ResolutionReturn {
 
 pub type ResResult = Result<ResolutionReturn, ResolutionErr>;
 pub type GqlRoot = BTreeMap<String, query::Value>;
-pub type GqlArgs = Vec<(String, query::Value)>;
+pub type GqlArgs = BTreeMap<String, query::Value>;
 
-pub type ResolverBoxed<C> =
-  Box<fn(&GqlRoot, Vec<(String, query::Value)>, &mut C, &GqlSchema<C>) -> ResResult>;
+pub type ResolverBoxed<C> = Box<fn(&GqlRoot, GqlArgs, &mut C, &GqlSchema<C>) -> ResResult>;
 
 #[derive(Clone)]
 pub struct Resolver<C> {

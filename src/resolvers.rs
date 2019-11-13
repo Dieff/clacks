@@ -1,5 +1,5 @@
 use graphql_parser::query;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use crate::gql_context::GqlContext;
 use crate::gqln::{
@@ -7,14 +7,6 @@ use crate::gqln::{
 };
 use crate::models::create_message;
 use crate::ws_actors::MsgMessageCreated;
-
-fn args_map(args: GqlArgs) -> HashMap<String, query::Value> {
-  let mut result = HashMap::new();
-  args.into_iter().for_each(|(name, arg)| {
-    result.insert(name, arg);
-  });
-  result
-}
 
 fn assert_arg_is_object<'a>(arg: &'a query::Value) -> Option<&'a GqlObj> {
   match arg {
@@ -36,12 +28,10 @@ pub fn mutation_create_message(
   context: &mut GqlContext,
   _schema: &GqlSchema<GqlContext>,
 ) -> ResResult {
-  let margs = args_map(args);
-  dbg!(&margs);
   let input_err =
     ResolutionErr::MissingArgument(MissingArgument::new("Mutation", "createMessage", "input"));
   let input =
-    assert_arg_is_object(margs.get("input").ok_or(input_err.clone())?).ok_or(input_err.clone())?;
+    assert_arg_is_object(args.get("input").ok_or(input_err.clone())?).ok_or(input_err.clone())?;
   let msg_content = assert_arg_is_string(input.get("content").unwrap_or(&query::Value::Null))
     .ok_or(ResolutionErr::MissingArgument(MissingArgument::new(
       "CreateMessageInput",

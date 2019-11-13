@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashMap};
 use crate::gqln::base_types::*;
 
 // TODO: make this function smart
-fn naive_check_var_type(var_type: &query::Type, var_value: &GqlValue) -> bool {
+pub fn naive_check_var_type(var_type: &query::Type, var_value: &GqlValue) -> bool {
   match (var_type, var_value) {
     (_, GqlValue::Variable(_)) => false,
     (query::Type::NamedType(_), GqlValue::Null) => true,
@@ -262,6 +262,8 @@ impl GqlRunningQuery {
     )
   }
 
+  //fn parse_fields_selection
+
   pub fn get_initial_items(&mut self) -> GqlExecResult<Vec<FieldSelection>> {
     let queries = self.get_queries();
     let mutations = self.get_mutations();
@@ -381,16 +383,6 @@ pub fn gql_to_json(value: GqlValue) -> GqlExecResult<JsonValue> {
     }
   }
 }
-
-// TODO: actually make this work
-/*pub fn trim_selection_fields(
-  fields: &Vec<query::Field>,
-  result: &mut BTreeMap<String, query::Value>,
-) {
-  for field in fields {
-    result.remove(field.name.as_str());
-  }
-}*/
 
 #[cfg(test)]
 mod tests {
