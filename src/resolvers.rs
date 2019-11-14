@@ -40,7 +40,7 @@ pub fn mutation_create_message(
     )))?
     .to_owned();
   let msg_channel = 0;
-  let actor_message = MsgMessageCreated::new(msg_channel, msg_content, vec![0, 0]);
+  let actor_message = MsgMessageCreated::new(msg_channel, msg_content, "asdf".to_owned());
   context.ws_addr.do_send(actor_message);
   let mut bmap = GqlObj::new();
   bmap.insert("id".to_owned(), query::Value::String("asdf".to_owned()));
@@ -61,4 +61,15 @@ pub fn subscription_message(
     bmap.insert("content".to_owned(), content.to_owned());
   }
   Ok(ResolutionReturn::Type(("Message".to_owned(), bmap)))
+}
+
+pub fn query_me(
+  _root: &GqlRoot,
+  _args: GqlArgs,
+  context: &mut GqlContext,
+  _: &GqlSchema<GqlContext>,
+) -> ResResult {
+  Ok(ResolutionReturn::Scalar(query::Value::String(
+    context.cur_user.to_owned(),
+  )))
 }

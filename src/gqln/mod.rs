@@ -495,6 +495,7 @@ struct PendingQuery<'a> {
   fields: Vec<SimpleField>,
 }
 
+#[derive(Default)]
 struct ResolutionContext {
   cur_type: String,
   map_key: String,
@@ -510,9 +511,7 @@ impl ResolutionContext {
       cur_type,
       map_key,
       fields,
-      field_res_progress: 0,
-      data: BTreeMap::new(),
-      in_list: None,
+      ..Default::default()
     }
   }
 

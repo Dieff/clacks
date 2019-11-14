@@ -28,7 +28,7 @@ type MessageView {
 
 type Query {
   unread_messages: [Message]!
-  me: User!
+  me: ID!
 }
 
 input CreateMessageInput {

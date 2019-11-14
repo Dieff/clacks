@@ -1,76 +1,19 @@
-use actix::{Actor, ActorContext, Addr, AsyncContext, Context, Handler, Message, StreamHandler};
+use actix::{Actor, ActorContext, Addr, AsyncContext, Context, Handler, StreamHandler};
 use actix_web_actors::ws;
 use graphql_parser::query::Value as GqlValue;
 use log::info;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 
+use crate::auth;
 use crate::gql_context::{GqlContext, Schema};
-use crate::gqln::{GqlRequest, GqlResponse, GqlRoot, ResolutionErr};
+use crate::gqln::{GqlRequest, GqlRoot};
 use crate::models::DbPool;
 use crate::ws_messages::{ClientWsMessage, ServerWsMessage, WsError};
 
-// -------------- Actix Messages ------------------
-
-#[derive(Message)]
-pub struct MsgNewSubscription {
-  user_id: Vec<u8>,
-  sub_id: String,
-  sub: GqlRequest,
-  addr: Addr<WsHandler>,
-}
-
-#[derive(Message)]
-pub struct MsgWsDisconnected {
-  id: Vec<u8>,
-  subscriptions: Vec<String>,
-}
-
-#[derive(Message, Clone, Debug)]
-struct MsgSubscriptionStop {
-  id: String,
-}
-
-#[derive(Message, Clone)]
-pub struct MsgMessageCreated {
-  pub channel: i32,
-  pub content: String,
-  pub sender: Vec<u8>,
-}
-
-impl MsgMessageCreated {
-  pub fn new(channel: i32, content: String, sender: Vec<u8>) -> Self {
-    MsgMessageCreated {
-      channel,
-      content,
-      sender,
-    }
-  }
-}
-
-#[derive(Message, Clone, Debug)]
-struct MsgSubscriptionData {
-  errors: Vec<JsonValue>,
-  data: Option<JsonValue>,
-  id: String,
-}
-
-impl MsgSubscriptionData {
-  fn new(id: String, result: Result<JsonValue, ResolutionErr>) -> Self {
-    match result {
-      Ok(data) => MsgSubscriptionData {
-        errors: Vec::new(),
-        data: Some(data),
-        id,
-      },
-      Err(err) => MsgSubscriptionData {
-        errors: vec![],
-        data: None,
-        id,
-      }, // TODO: fix this
-    }
-  }
-}
+// --------------- Messages -----------------------
+mod messages;
+pub use messages::*;
 
 // -------------- Actors and Types ----------------
 
@@ -81,7 +24,7 @@ struct SubscriptionSource {
 
 pub struct ConnectionTracker {
   pub connections: usize,
-  subs: HashMap<Vec<u8>, SubscriptionSource>,
+  subs: HashMap<String, SubscriptionSource>,
   schema: Schema,
   pool: DbPool,
 }
@@ -149,16 +92,18 @@ impl Handler<MsgMessageCreated> for ConnectionTracker {
 }
 
 pub struct WsHandler {
-  conn_id: Option<Vec<u8>>,
+  conn_id: Option<String>,
+  secret: String,
   tracker: Addr<ConnectionTracker>,
   subscriptions: Vec<String>,
 }
 
 impl WsHandler {
-  pub fn new(tracker: Addr<ConnectionTracker>, id: Option<Vec<u8>>) -> Self {
+  pub fn new(tracker: Addr<ConnectionTracker>, id: Option<String>, secret: String) -> Self {
     WsHandler {
       conn_id: id,
       tracker,
+      secret,
       subscriptions: Vec::new(),
     }
   }
@@ -185,8 +130,22 @@ impl StreamHandler<ws::Message, ws::ProtocolError> for WsHandler {
       ws::Message::Text(text) => match ClientWsMessage::from_str(&text) {
         Err(e) => ctx.text(&ServerWsMessage::from_err(e)),
         Ok(ClientWsMessage::ConnectionInit(init)) => {
-          if let Some(JsonValue::String(id)) = init.payload.get("Authorization") {
-            self.conn_id = Some(id.as_bytes().to_vec());
+          if let Some(JsonValue::String(jwt)) = init.payload.get("Authorization") {
+            match auth::decode_jwt(jwt, &self.secret) {
+              Ok(user_info) => {
+                info!(
+                  "A user has sent auth over websocket. They are: {}",
+                  user_info.id
+                );
+                self.conn_id = Some(user_info.id);
+              }
+              Err(e) => {
+                info!("JWT Error in websocket {:?}", e);
+                self.disconnected();
+                ctx.close(None);
+                ctx.stop();
+              }
+            }
           }
           ctx.text(&ServerWsMessage::ack());
         }

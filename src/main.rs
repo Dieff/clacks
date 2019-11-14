@@ -7,7 +7,6 @@ use actix_web_actors::ws;
 use env_logger;
 use graphql_parser::parse_schema;
 use log::info;
-use std::env;
 
 #[macro_use]
 extern crate diesel;
@@ -15,6 +14,10 @@ use diesel::mysql::MysqlConnection;
 use diesel::r2d2::{ConnectionManager, Pool};
 use dotenv;
 
+/// JWT validation
+mod auth;
+/// Contains the configuration for the application
+mod config;
 mod gql_context;
 mod gqln;
 mod models;
@@ -31,21 +34,7 @@ use gqln::*;
 use models::*;
 use ws_actors::WsHandler;
 
-// When a new websocket request comes in, start a new actor
-fn r_wstest(
-    req: HttpRequest,
-    stream: web::Payload,
-    recip: web::Data<Addr<ws_actors::ConnectionTracker>>,
-) -> Result<HttpResponse, Error> {
-    info!("New websocket request. Some subscriptions will be next.");
-    let id = req
-        .headers()
-        .get("Authorization")
-        .map(|i| i.as_bytes().to_vec());
-    let handler = WsHandler::new(recip.get_ref().to_owned(), id);
-    ws::start_with_protocols(handler, &["graphql-ws"], &req, stream)
-}
-
+// For standard health checks
 fn r_health(db: web::Data<DbPool>) -> impl Responder {
     let conn: &MysqlConnection = &db.get().unwrap();
     let (message, status) = match create_channel(conn, "test123") {
@@ -56,6 +45,30 @@ fn r_health(db: web::Data<DbPool>) -> impl Responder {
         _ => ("Failure".to_owned(), StatusCode::INTERNAL_SERVER_ERROR),
     };
     HttpResponse::build(status).body(message)
+}
+
+// When a new websocket request comes in, start a new actor
+fn r_wstest(
+    req: HttpRequest,
+    stream: web::Payload,
+    recip: web::Data<Addr<ws_actors::ConnectionTracker>>,
+    config: web::Data<config::AppConfig>,
+) -> Result<HttpResponse, Error> {
+    info!("New websocket request. Some subscriptions will be next.");
+    let id = match req.headers().get("Authorization").map(|i| i.to_str()) {
+        Some(Ok(s)) => match auth::decode_jwt(s, &config.jwt_secret.as_ref().unwrap()) {
+            Ok(claims) => Some(claims.id),
+            _ => None,
+        },
+        _ => None,
+    };
+
+    let handler = WsHandler::new(
+        recip.get_ref().to_owned(),
+        id,
+        config.jwt_secret.clone().unwrap(),
+    );
+    ws::start_with_protocols(handler, &["graphql-ws"], &req, stream)
 }
 
 #[derive(Clone)]
@@ -70,35 +83,58 @@ impl GqlRouteContext {
     }
 }
 
+fn handle_graphql_req(
+    req: &HttpRequest,
+    payload: GqlRequest,
+    ctx: &web::Data<GqlRouteContext>,
+    tracker: &Addr<ws_actors::ConnectionTracker>,
+    config: &config::AppConfig,
+) -> HttpResponse {
+    if let Some(auth_header) = req.headers().get("Authorization") {
+        if let Ok(jwt) = auth_header.to_str() {
+            if let Ok(user_info) = auth::decode_jwt(jwt, &config.jwt_secret.as_ref().unwrap()) {
+                let mut context = GqlContext::new(ctx.db.clone(), user_info.id, tracker.to_owned());
+                let gql_resp = ctx.schema.resolve(&mut context, payload, None);
+                return HttpResponse::Ok().json(GqlResponse::from(gql_resp));
+            }
+        }
+    }
+    HttpResponse::Unauthorized().finish()
+}
+
 // The main POST endpoint for graphql queries
 // such as reading data, sending messages
-fn r_graphql(
+fn r_graphql_post(
+    req: HttpRequest,
     payload: web::Json<GqlRequest>,
     gql_ctx: web::Data<GqlRouteContext>,
     tracker: web::Data<Addr<ws_actors::ConnectionTracker>>,
+    config: web::Data<config::AppConfig>,
 ) -> impl Responder {
-    let mut context = GqlContext::new(
-        gql_ctx.db.clone(),
-        "Asdf".to_owned(),
-        tracker.get_ref().clone(),
-    );
-    let gql_resp = gql_ctx.schema.resolve(&mut context, payload.0, None);
-    HttpResponse::Ok().json(GqlResponse::from(gql_resp))
+    handle_graphql_req(
+        &req,
+        payload.0,
+        &gql_ctx,
+        tracker.get_ref(),
+        config.get_ref(),
+    )
 }
 
 // graphql is also supposed to be able to handle GET requests
 fn r_graphql_get(
+    req: HttpRequest,
     payload: web::Query<GqlRequest>,
     gql_ctx: web::Data<GqlRouteContext>,
     tracker: web::Data<Addr<ws_actors::ConnectionTracker>>,
+    config: web::Data<config::AppConfig>,
 ) -> impl Responder {
-    let mut context = GqlContext::new(
-        gql_ctx.db.clone(),
-        "Asdf".to_owned(),
-        tracker.get_ref().clone(),
-    );
-    let gql_resp = gql_ctx.schema.resolve(&mut context, payload.0, None);
-    HttpResponse::Ok().json(GqlResponse::from(gql_resp))
+    handle_graphql_req(
+        &req,
+        payload.0,
+        &gql_ctx,
+        tracker.get_ref(),
+        config.get_ref(),
+    )
 }
 
 fn main() -> std::io::Result<()> {
@@ -112,11 +148,11 @@ fn main() -> std::io::Result<()> {
     let schema =
         parse_schema(include_str!("../schema.graphql")).expect("could not parse gql schema");
 
-    // recover the db connection string
-    let db_url = env::var("DATABASE_URL").expect("could not find env var $DATABASE_URL");
+    // Get app config
+    let config = config::AppConfig::new();
 
     // the DB pool allows connections to the mysql db to be shared across threads
-    let manager = ConnectionManager::<MysqlConnection>::new(db_url);
+    let manager = ConnectionManager::<MysqlConnection>::new(config.db_url.clone().unwrap());
     let pool = Pool::builder()
         .build(manager)
         .expect("Failed to create pool.");
@@ -134,6 +170,7 @@ fn main() -> std::io::Result<()> {
                 "Subscription",
                 "message",
             ),
+            Resolver::new(Box::new(resolvers::query_me), "Query", "me"),
         ])
         .unwrap();
 
@@ -143,25 +180,22 @@ fn main() -> std::io::Result<()> {
     // start the runtime to allow actix actors to handle events
     let actix_sys = System::new("main");
 
+    // can only start the tracker once the system is up
     let tracker_addr = ws_tracker.start();
 
-    // Starting the server creates some actors
+    let port = config.graphql_port;
+    // Starting the server creates more actors
     HttpServer::new(move || {
         App::new()
             .data(pool.clone())
             .data(gql_context.clone())
             .data(tracker_addr.clone())
+            .data(config.clone())
             .route("/healthz", web::get().to(r_health))
             .route(
                 "/graphql",
                 web::post()
-                    .to(r_graphql)
-                    .guard(guard::Header("content-type", "application/json")),
-            )
-            .route(
-                "/graphql",
-                web::get()
-                    .to(r_graphql_get)
+                    .to(r_graphql_post)
                     .guard(guard::Header("content-type", "application/json")),
             )
             .route(
@@ -170,9 +204,15 @@ fn main() -> std::io::Result<()> {
                     .to(r_wstest)
                     .guard(guard::Header("upgrade", "websocket")),
             )
+            .route(
+                "/graphql",
+                web::get()
+                    .to(r_graphql_get)
+                    .guard(guard::Header("content-type", "application/json")),
+            )
             .wrap(middleware::Logger::default())
     })
-    .bind("0.0.0.0:8000")?
+    .bind(format!("0.0.0.0:{}", port))?
     .start();
 
     actix_sys.run()?;
