@@ -1,7 +1,7 @@
 use crate::gqln::{GqlRequest, ResolutionErr};
 use crate::ws_actors::WsHandler;
 use actix::{Addr, Message};
-use serde_json::Value as JsonValue;
+use serde_json::{json, Value as JsonValue};
 
 #[derive(Message)]
 pub struct MsgNewSubscription {
@@ -14,27 +14,29 @@ pub struct MsgNewSubscription {
 #[derive(Message)]
 pub struct MsgWsDisconnected {
   pub id: String,
-  pub subscriptions: Vec<String>,
 }
 
 #[derive(Message, Clone, Debug)]
 pub struct MsgSubscriptionStop {
-  pub id: String,
+  pub sub_id: String,
+  pub user_id: String,
 }
 
-#[derive(Message, Clone)]
+#[derive(Message, Clone, Debug)]
 pub struct MsgMessageCreated {
   pub channel: i32,
   pub content: String,
   pub sender: String,
+  pub msg_id: i32,
 }
 
 impl MsgMessageCreated {
-  pub fn new(channel: i32, content: String, sender: String) -> Self {
+  pub fn new(channel: i32, content: String, sender: String, msg_id: i32) -> Self {
     MsgMessageCreated {
       channel,
       content,
       sender,
+      msg_id,
     }
   }
 }
@@ -55,10 +57,10 @@ impl MsgSubscriptionData {
         id,
       },
       Err(err) => MsgSubscriptionData {
-        errors: vec![],
+        errors: vec![json!(err)],
         data: None,
         id,
-      }, // TODO: fix this
+      },
     }
   }
 }

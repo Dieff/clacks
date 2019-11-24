@@ -16,6 +16,14 @@ pub struct DbChannel {
 }
 
 #[derive(Queryable, PartialEq, Debug)]
+pub struct DbChannelMember {
+  pub id: i32,
+  pub channel_id: i32,
+  pub user: String,
+  pub user_role: Option<String>,
+}
+
+#[derive(Queryable, PartialEq, Debug)]
 pub struct DbMessage {
   pub id: i32,
   pub sender: String,
@@ -41,6 +49,14 @@ pub struct NewChannel<'a> {
 }
 
 #[derive(Insertable)]
+#[table_name = "channel_members"]
+pub struct NewMember<'a> {
+  pub channel_id: i32,
+  pub user: &'a str,
+  pub user_role: &'a str,
+}
+
+#[derive(Insertable)]
 #[table_name = "messages"]
 pub struct NewMessage<'a> {
   pub sender: &'a str,
@@ -56,6 +72,24 @@ pub fn create_channel(conn: &MysqlConnection, display_name: &str) -> QueryResult
     .execute(conn)?;
 
   Ok(channels::table.order(channels::id.desc()).first(conn)?)
+}
+
+pub fn add_user_to_channel(
+  conn: &MysqlConnection,
+  user: &str,
+  channel: i32,
+  role: &str,
+) -> QueryResult<()> {
+  let new_member = NewMember {
+    channel_id: channel,
+    user_role: role,
+    user,
+  };
+
+  diesel::insert_into(channel_members::table)
+    .values(&new_member)
+    .execute(conn)?;
+  Ok(())
 }
 
 pub fn create_message(
@@ -75,4 +109,12 @@ pub fn create_message(
     .execute(conn)?;
 
   Ok(messages::table.order(messages::id.desc()).first(conn)?)
+}
+
+pub fn get_users_channels(conn: &MysqlConnection, user: &str) -> QueryResult<Vec<i32>> {
+  let res = channel_members::table
+    .filter(channel_members::dsl::user.eq(user))
+    .load::<DbChannelMember>(conn)?;
+
+  Ok(res.into_iter().map(|cm| cm.channel_id).collect())
 }

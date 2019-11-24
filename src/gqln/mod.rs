@@ -270,7 +270,6 @@ impl<C> GqlSchema<C> {
             res_ctx.data.insert(field.name.to_owned(), inner_val);
           }
           ResolutionReturn::Type((gql_type, initial_field_results)) => {
-            dbg!(&gql_type);
             let mut ctx = ResolutionContext::new(
               gql_type.to_owned(),
               field.name.to_owned(),

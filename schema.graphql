@@ -1,5 +1,6 @@
 type User {
   id: ID!
+  name: String
 }
 
 type Message {
@@ -41,5 +42,5 @@ type Mutation {
 }
 
 type Subscription {
-  message(channel: ID): Message
+  message: Message
 }

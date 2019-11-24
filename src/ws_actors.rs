@@ -1,14 +1,14 @@
 use actix::{Actor, ActorContext, Addr, AsyncContext, Context, Handler, StreamHandler};
 use actix_web_actors::ws;
 use graphql_parser::query::Value as GqlValue;
-use log::info;
+use log::{info, warn};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 
 use crate::auth;
 use crate::gql_context::{GqlContext, Schema};
 use crate::gqln::{GqlRequest, GqlRoot};
-use crate::models::DbPool;
+use crate::models::{get_users_channels, DbPool};
 use crate::ws_messages::{ClientWsMessage, ServerWsMessage, WsError};
 
 // --------------- Messages -----------------------
@@ -17,14 +17,22 @@ pub use messages::*;
 
 // -------------- Actors and Types ----------------
 
-struct SubscriptionSource {
+#[derive(PartialEq, Eq, Hash, Clone, Debug)]
+struct SubscriptionInstance {
+  user: String,
+  id: String,
+}
+
+struct ActiveSubscription {
+  channels: Vec<i32>,
   addr: Addr<WsHandler>,
   req: GqlRequest,
 }
 
 pub struct ConnectionTracker {
   pub connections: usize,
-  subs: HashMap<String, SubscriptionSource>,
+  subscriptions: HashMap<SubscriptionInstance, ActiveSubscription>,
+  channels: HashMap<i32, Vec<SubscriptionInstance>>,
   schema: Schema,
   pool: DbPool,
 }
@@ -33,9 +41,40 @@ impl ConnectionTracker {
   pub fn new(schema: Schema, pool: DbPool) -> Self {
     ConnectionTracker {
       connections: 0,
-      subs: HashMap::new(),
+      subscriptions: HashMap::new(),
+      channels: HashMap::new(),
       schema,
       pool,
+    }
+  }
+
+  fn remove_sub(&mut self, user: &String, sub_id: &String) {
+    let instance = SubscriptionInstance {
+      user: user.to_owned(),
+      id: sub_id.to_owned(),
+    };
+    if let Some(sub) = self.subscriptions.get(&instance) {
+      for channel in &sub.channels {
+        let chsub = self.channels.get_mut(channel).unwrap();
+        for i in 0..chsub.len() {
+          if chsub[i] == instance {
+            chsub.swap_remove(i);
+          }
+        }
+      }
+    }
+  }
+
+  fn remove_user(&mut self, user: &String) {
+    let ids: Vec<String> = self
+      .subscriptions
+      .keys()
+      .filter(|k| k.user == *user)
+      .map(|k| k.id.clone())
+      .collect();
+
+    for id in &ids {
+      self.remove_sub(user, id);
     }
   }
 }
@@ -49,13 +88,32 @@ impl Handler<MsgNewSubscription> for ConnectionTracker {
 
   fn handle(&mut self, msg: MsgNewSubscription, ctx: &mut Self::Context) {
     self.connections += 1;
-    self.subs.insert(
-      msg.user_id,
-      SubscriptionSource {
-        addr: msg.addr,
-        req: msg.sub,
+    let instance = SubscriptionInstance {
+      user: msg.user_id.clone(),
+      id: msg.sub_id.clone(),
+    };
+    let channels =
+      get_users_channels(&self.pool.get().unwrap(), &msg.user_id).unwrap_or(Vec::new());
+    info!("new user connected, listening on channels {:?}", &channels);
+    self.subscriptions.insert(
+      instance.clone(),
+      ActiveSubscription {
+        channels: channels.clone(),
+        addr: msg.addr.clone(),
+        req: msg.sub.clone(),
       },
     );
+
+    for channel in channels {
+      match self.channels.get_mut(&channel) {
+        Some(subs) => {
+          subs.push(instance.clone());
+        }
+        None => {
+          self.channels.insert(channel, vec![instance.clone()]);
+        }
+      }
+    }
     println!("{} clients are connected", self.connections);
   }
 }
@@ -65,6 +123,7 @@ impl Handler<MsgWsDisconnected> for ConnectionTracker {
 
   fn handle(&mut self, msg: MsgWsDisconnected, ctx: &mut Self::Context) {
     self.connections = self.connections.saturating_sub(1);
+    self.remove_user(&msg.id);
     println!("{} clients are connected", self.connections);
   }
 }
@@ -73,21 +132,35 @@ impl Handler<MsgMessageCreated> for ConnectionTracker {
   type Result = ();
 
   fn handle(&mut self, msg: MsgMessageCreated, ctx: &mut Self::Context) {
-    for sub in self.subs.values() {
-      let mut context = GqlContext::new(self.pool.clone(), "0".to_owned(), ctx.address());
+    if let Some(subs) = self.channels.get(&msg.channel) {
       let mut root = GqlRoot::new();
-      root.insert("id".to_owned(), GqlValue::String("test".to_owned()));
+      root.insert("id".to_owned(), GqlValue::String(format!("{}", msg.msg_id)));
       root.insert(
         "content".to_owned(),
         GqlValue::String(msg.content.to_owned()),
       );
-      let res = self
-        .schema
-        .resolve(&mut context, sub.req.clone(), Some(root));
-      sub
-        .addr
-        .do_send(MsgSubscriptionData::new("1".to_owned(), res));
+      for sub in subs {
+        // No need to tell a user about the message they just sent
+        if sub.user != msg.sender {
+          let mut context = GqlContext::new(self.pool.clone(), sub.user.clone(), ctx.address());
+          let sub_data = self.subscriptions.get(sub).unwrap();
+          let res = self
+            .schema
+            .resolve(&mut context, sub_data.req.clone(), Some(root.clone()));
+          sub_data
+            .addr
+            .do_send(MsgSubscriptionData::new(sub.id.clone(), res));
+        }
+      }
     }
+  }
+}
+
+impl Handler<MsgSubscriptionStop> for ConnectionTracker {
+  type Result = ();
+
+  fn handle(&mut self, msg: MsgSubscriptionStop, _ctx: &mut Self::Context) {
+    self.remove_sub(&msg.user_id, &msg.sub_id);
   }
 }
 
@@ -95,7 +168,6 @@ pub struct WsHandler {
   conn_id: Option<String>,
   secret: String,
   tracker: Addr<ConnectionTracker>,
-  subscriptions: Vec<String>,
 }
 
 impl WsHandler {
@@ -104,16 +176,12 @@ impl WsHandler {
       conn_id: id,
       tracker,
       secret,
-      subscriptions: Vec::new(),
     }
   }
 
   fn disconnected(&self) {
     if let Some(id) = &self.conn_id {
-      self.tracker.do_send(MsgWsDisconnected {
-        id: id.clone(),
-        subscriptions: self.subscriptions.clone(),
-      });
+      self.tracker.do_send(MsgWsDisconnected { id: id.clone() });
     }
   }
 }
@@ -128,7 +196,10 @@ impl StreamHandler<ws::Message, ws::ProtocolError> for WsHandler {
     match msg {
       ws::Message::Ping(msg) => ctx.pong(&msg),
       ws::Message::Text(text) => match ClientWsMessage::from_str(&text) {
-        Err(e) => ctx.text(&ServerWsMessage::from_err(e)),
+        Err(e) => {
+          warn!("{:?}", e);
+          ctx.text(&ServerWsMessage::from_err(e));
+        }
         Ok(ClientWsMessage::ConnectionInit(init)) => {
           if let Some(JsonValue::String(jwt)) = init.payload.get("Authorization") {
             match auth::decode_jwt(jwt, &self.secret) {
@@ -147,6 +218,12 @@ impl StreamHandler<ws::Message, ws::ProtocolError> for WsHandler {
               }
             }
           }
+          if self.conn_id == None {
+            warn!("No authentication for client. Closing socket.");
+            ctx.close(None);
+            self.disconnected();
+            ctx.stop();
+          }
           ctx.text(&ServerWsMessage::ack());
         }
         Ok(ClientWsMessage::ConnectionTerminate) => {
@@ -156,7 +233,7 @@ impl StreamHandler<ws::Message, ws::ProtocolError> for WsHandler {
         }
         Ok(ClientWsMessage::Start(new_sub)) => {
           if let Some(id) = &self.conn_id {
-            dbg!("REgistering a new subscription!");
+            dbg!("REgistering a new subscription for user {}", &id);
             self.tracker.do_send(MsgNewSubscription {
               user_id: id.clone(),
               sub_id: new_sub.id,
@@ -165,12 +242,16 @@ impl StreamHandler<ws::Message, ws::ProtocolError> for WsHandler {
             });
             info!("New subscription");
           } else {
-            ctx.text(&ServerWsMessage::from(WsError::Unauthorized));
+            warn!("Client attempted to subscribe without authorization");
+            ctx.close(None);
           }
-          // new sub!
         }
         Ok(ClientWsMessage::Stop(end_sub)) => {
-          // end sub!
+          let msg = MsgSubscriptionStop {
+            sub_id: end_sub.id,
+            user_id: self.conn_id.as_ref().unwrap().to_owned(),
+          };
+          self.tracker.do_send(msg);
         }
       },
       ws::Message::Close(_) => {

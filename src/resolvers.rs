@@ -1,5 +1,6 @@
 use graphql_parser::query;
 use std::collections::BTreeMap;
+use std::convert::TryInto;
 
 use crate::gql_context::GqlContext;
 use crate::gqln::{
@@ -22,6 +23,20 @@ fn assert_arg_is_string(arg: &query::Value) -> Option<&str> {
   }
 }
 
+fn assert_arg_is_number(arg: &query::Value) -> Option<i32> {
+  match arg {
+    query::Value::Int(i) => {
+      if let Some(n) = i.as_i64() {
+        if let Ok(m) = n.try_into() {
+          return Some(m);
+        }
+      }
+      None
+    }
+    _ => None,
+  }
+}
+
 pub fn mutation_create_message(
   _root: &GqlRoot,
   args: GqlArgs,
@@ -39,8 +54,10 @@ pub fn mutation_create_message(
       "",
     )))?
     .to_owned();
-  let msg_channel = 0;
-  let actor_message = MsgMessageCreated::new(msg_channel, msg_content, "asdf".to_owned());
+  let msg_channel = assert_arg_is_number(input.get("channel").ok_or(input_err.clone())?)
+    .ok_or(input_err.clone())?;
+  let actor_message =
+    MsgMessageCreated::new(msg_channel, msg_content, context.cur_user.clone(), 100);
   context.ws_addr.do_send(actor_message);
   let mut bmap = GqlObj::new();
   bmap.insert("id".to_owned(), query::Value::String("asdf".to_owned()));

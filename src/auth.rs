@@ -84,16 +84,16 @@ mod tests {
 
   #[test]
   fn jwt_ser_and_deser() {
-    let token = encode_jwt("user1", "joe", "12345");
-    let invalid_token = encode_jwt("user1", "joe", "BAD SECRET");
+    let token = encode_jwt("1", "joe", "123456");
+    let invalid_token = encode_jwt("1", "joe", "BAD SECRET");
     let garbage_token = "asdfasdfasdfasdf".to_owned();
-    assert!(decode_jwt(&invalid_token, "12345").is_err());
-    assert!(decode_jwt(&garbage_token, "12345").is_err());
+    assert!(decode_jwt(&invalid_token, "123456").is_err());
+    assert!(decode_jwt(&garbage_token, "123456").is_err());
     assert_eq!(
-      decode_jwt(&token, "12345").unwrap(),
+      decode_jwt(&token, "123456").unwrap(),
       UserClaims {
         name: "joe".to_owned(),
-        id: "user1".to_owned()
+        id: "1".to_owned()
       }
     );
   }
