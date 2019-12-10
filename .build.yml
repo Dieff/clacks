@@ -2,11 +2,12 @@
 image: "ubuntu/latest"
 pacakges:
   - rustc
+  - cargo
   - libmariadb-dev-compat
 tasks:
   - build: |
-      cd clacks
+      cd ~/Clacks
       cargo build
   - test: |
-      cd clacks
+      cd ~/Clacks
       cargo test -- --no-capture
