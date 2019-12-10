@@ -46,13 +46,11 @@ pub fn encode_jwt(user_id: &str, user_name: &str, secret: &str) -> String {
   };
 
   let jwt = JWT::new_decoded(From::from(header), claims);
-  let token = jwt
+  jwt
     .encode(&signing_secret)
     .unwrap()
     .unwrap_encoded()
-    .to_string();
-  dbg!(&token);
-  token
+    .to_string()
 }
 
 pub fn decode_jwt(jwt: &str, secret: &str) -> Result<UserClaims, JwtErr> {

@@ -2,12 +2,13 @@ use chrono::NaiveDateTime;
 use diesel::mysql::MysqlConnection;
 use diesel::prelude::*;
 use diesel::r2d2::{ConnectionManager, Pool};
+use log::info;
 
 use crate::schema::*;
 
 pub type DbPool = Pool<ConnectionManager<MysqlConnection>>;
 
-#[derive(Queryable, PartialEq, Debug)]
+#[derive(Queryable, PartialEq, Debug, Clone)]
 pub struct DbChannel {
   pub id: i32,
   pub display_name: Option<String>,
@@ -111,10 +112,48 @@ pub fn create_message(
   Ok(messages::table.order(messages::id.desc()).first(conn)?)
 }
 
+pub fn get_channels(conn: &MysqlConnection) -> QueryResult<Vec<DbChannel>> {
+  channels::table.load::<DbChannel>(conn)
+}
+
+pub fn get_channel(conn: &MysqlConnection, channel_id: i32) -> QueryResult<Option<DbChannel>> {
+  let ch = channels::table.find(channel_id).load::<DbChannel>(conn)?;
+  match ch.len() {
+    1 => Ok(Some(ch[0].clone())),
+    _ => Ok(None),
+  }
+}
+
 pub fn get_users_channels(conn: &MysqlConnection, user: &str) -> QueryResult<Vec<i32>> {
   let res = channel_members::table
     .filter(channel_members::dsl::user.eq(user))
     .load::<DbChannelMember>(conn)?;
 
   Ok(res.into_iter().map(|cm| cm.channel_id).collect())
+}
+
+pub fn get_channel_users(conn: &MysqlConnection, channel: i32) -> QueryResult<Vec<String>> {
+  let res = channel_members::table
+    .filter(channel_members::dsl::channel_id.eq(channel))
+    .load::<DbChannelMember>(conn)?;
+
+  Ok(res.into_iter().map(|member| member.user).collect())
+}
+
+pub fn delete_channel(conn: &MysqlConnection, channel: i32) -> QueryResult<()> {
+  info!("Deleted channel {}", channel);
+  diesel::delete(channels::table.filter(channels::dsl::id.eq(channel))).execute(conn)?;
+  diesel::delete(channel_members::table.filter(channel_members::dsl::channel_id.eq(channel)))
+    .execute(conn)?;
+  Ok(())
+}
+
+pub fn remove_user(conn: &MysqlConnection, channel: i32, user: &str) -> QueryResult<()> {
+  diesel::delete(
+    channel_members::table
+      .filter(channel_members::dsl::channel_id.eq(channel))
+      .filter(channel_members::dsl::user.eq(user)),
+  )
+  .execute(conn)?;
+  Ok(())
 }

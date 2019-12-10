@@ -1,9 +1,5 @@
-use actix::{Actor, Addr, System};
-use actix_web::{
-    guard, http::StatusCode, middleware, web, App, Error, HttpRequest, HttpResponse, HttpServer,
-    Responder,
-};
-use actix_web_actors::ws;
+use actix::{Actor, System};
+use actix_web::{guard, middleware, web, App, HttpServer};
 use env_logger;
 use graphql_parser::parse_schema;
 use log::info;
@@ -22,120 +18,16 @@ mod gql_context;
 mod gqln;
 mod models;
 mod resolvers;
+mod routes;
 mod schema;
 /// Handle the statefule aspect of ws connections and graphql subscriptions.
 mod ws_actors;
 /// Contains serializable structs that represent the messages sent across
 /// a websocket on a graphql subscription server.
 mod ws_messages;
+use routes::*;
 
-use gql_context::GqlContext;
 use gqln::*;
-use models::*;
-use ws_actors::WsHandler;
-
-// For standard health checks
-fn r_health(db: web::Data<DbPool>) -> impl Responder {
-    let conn: &MysqlConnection = &db.get().unwrap();
-    let (message, status) = match create_channel(conn, "test123") {
-        Ok(channel) => (
-            format!("Success. New channel created with id {}", channel.id),
-            StatusCode::OK,
-        ),
-        _ => ("Failure".to_owned(), StatusCode::INTERNAL_SERVER_ERROR),
-    };
-    HttpResponse::build(status).body(message)
-}
-
-// When a new websocket request comes in, start a new actor
-fn r_wstest(
-    req: HttpRequest,
-    stream: web::Payload,
-    recip: web::Data<Addr<ws_actors::ConnectionTracker>>,
-    config: web::Data<config::AppConfig>,
-) -> Result<HttpResponse, Error> {
-    info!("New websocket request. Some subscriptions will be next.");
-    let id = match req.headers().get("Authorization").map(|i| i.to_str()) {
-        Some(Ok(s)) => match auth::decode_jwt(s, &config.jwt_secret.as_ref().unwrap()) {
-            Ok(claims) => Some(claims.id),
-            _ => None,
-        },
-        _ => None,
-    };
-
-    let handler = WsHandler::new(
-        recip.get_ref().to_owned(),
-        id,
-        config.jwt_secret.clone().unwrap(),
-    );
-    ws::start_with_protocols(handler, &["graphql-ws"], &req, stream)
-}
-
-#[derive(Clone)]
-struct GqlRouteContext {
-    db: DbPool,
-    schema: GqlSchema<GqlContext>,
-}
-
-impl GqlRouteContext {
-    fn new(schema: GqlSchema<GqlContext>, db: DbPool) -> Self {
-        GqlRouteContext { db, schema }
-    }
-}
-
-fn handle_graphql_req(
-    req: &HttpRequest,
-    payload: GqlRequest,
-    ctx: &web::Data<GqlRouteContext>,
-    tracker: &Addr<ws_actors::ConnectionTracker>,
-    config: &config::AppConfig,
-) -> HttpResponse {
-    if let Some(auth_header) = req.headers().get("Authorization") {
-        if let Ok(jwt) = auth_header.to_str() {
-            if let Ok(user_info) = auth::decode_jwt(jwt, &config.jwt_secret.as_ref().unwrap()) {
-                let mut context = GqlContext::new(ctx.db.clone(), user_info.id, tracker.to_owned());
-                let gql_resp = ctx.schema.resolve(&mut context, payload, None);
-                return HttpResponse::Ok().json(GqlResponse::from(gql_resp));
-            }
-        }
-    }
-    HttpResponse::Unauthorized().finish()
-}
-
-// The main POST endpoint for graphql queries
-// such as reading data, sending messages
-fn r_graphql_post(
-    req: HttpRequest,
-    payload: web::Json<GqlRequest>,
-    gql_ctx: web::Data<GqlRouteContext>,
-    tracker: web::Data<Addr<ws_actors::ConnectionTracker>>,
-    config: web::Data<config::AppConfig>,
-) -> impl Responder {
-    handle_graphql_req(
-        &req,
-        payload.0,
-        &gql_ctx,
-        tracker.get_ref(),
-        config.get_ref(),
-    )
-}
-
-// graphql is also supposed to be able to handle GET requests
-fn r_graphql_get(
-    req: HttpRequest,
-    payload: web::Query<GqlRequest>,
-    gql_ctx: web::Data<GqlRouteContext>,
-    tracker: web::Data<Addr<ws_actors::ConnectionTracker>>,
-    config: web::Data<config::AppConfig>,
-) -> impl Responder {
-    handle_graphql_req(
-        &req,
-        payload.0,
-        &gql_ctx,
-        tracker.get_ref(),
-        config.get_ref(),
-    )
-}
 
 fn main() -> std::io::Result<()> {
     // read the .env and populate std::env
@@ -176,6 +68,10 @@ fn main() -> std::io::Result<()> {
 
     let ws_tracker = ws_actors::ConnectionTracker::new(gqschema.clone(), pool.clone());
     let gql_context = GqlRouteContext::new(gqschema, pool.clone());
+    let api_context = ApiContext {
+        db: pool.clone(),
+        config: config.clone(),
+    };
 
     // start the runtime to allow actix actors to handle events
     let actix_sys = System::new("main");
@@ -184,14 +80,16 @@ fn main() -> std::io::Result<()> {
     let tracker_addr = ws_tracker.start();
 
     let port = config.graphql_port;
+    let man_port = config.management_port;
+
     // Starting the server creates more actors
+    // graphql clients
     HttpServer::new(move || {
         App::new()
             .data(pool.clone())
             .data(gql_context.clone())
             .data(tracker_addr.clone())
             .data(config.clone())
-            .route("/healthz", web::get().to(r_health))
             .route(
                 "/graphql",
                 web::post()
@@ -201,7 +99,7 @@ fn main() -> std::io::Result<()> {
             .route(
                 "/graphql",
                 web::get()
-                    .to(r_wstest)
+                    .to(r_wsspawn)
                     .guard(guard::Header("upgrade", "websocket")),
             )
             .route(
@@ -215,6 +113,32 @@ fn main() -> std::io::Result<()> {
     .bind(format!("0.0.0.0:{}", port))?
     .start();
 
+    // server management
+    HttpServer::new(move || {
+        App::new().wrap(middleware::Logger::default()).service(
+            web::scope("/api/v1")
+                .data(api_context.clone())
+                .route("/healthz", web::get().to(r_health))
+                .route("/channel", web::get().to(r_get_channels)) // view channels
+                .route("/channel", web::post().to(r_create_channel)) // create channel
+                .route("/channel/{channelId}", web::get().to(r_get_channel_info))
+                .route("/channel/{channelId}", web::delete().to(r_delete_channel))
+                .route(
+                    "/channel/{channelId}/users",
+                    web::get().to(r_get_channel_users),
+                )
+                .route("/channel/{channelId}/users", web::put().to(r_add_user))
+                .route(
+                    "/channel/{channelId}/{uid}",
+                    web::delete().to(r_remove_user),
+                )
+                .route("/jwt/{uid}", web::get().to(r_get_jwt)),
+        )
+    })
+    .bind(format!("0.0.0.0:{}", man_port))?
+    .start();
+
+    info!("Time to start server.");
     actix_sys.run()?;
     Ok(())
 }
