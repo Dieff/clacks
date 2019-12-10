@@ -10,4 +10,4 @@ tasks:
       cargo build
   - test: |
       cd ~/Clacks
-      cargo test -- --no-capture
+      cargo test
