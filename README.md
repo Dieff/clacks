@@ -24,6 +24,7 @@ Requests should be authorized with the following header:
 Authorization: bearer <JWT>
 ```
 The JWT is in the format:
+
 ```
 Header
 {
@@ -41,6 +42,7 @@ Body
   "name": "User's name"
   ...: Optional fields with user info
 }
+
 ```
 
 To see the graphql API exposed by Clacks, look at `/schema.graphql`.
@@ -54,15 +56,16 @@ See `/openapi.yml` for documentation of this API.
 ## Developing
 
 Here are some steps to get up and running:
+
 1. Install rust, cargo, mysql dev (build dependency) packages
 2. Start the docker-compose file to run the backend database: `docker-compose up -d`
 3. Initialize the new database with the `diesel` cli
-  - `cargo install diesel`
-  - `diesel database setup --database-url='mysql://diesel::test123@[::1]/chat'`
+  * `cargo install diesel`
+  * `diesel database setup --database-url='mysql://diesel::test123@[::1]/chat'`
 4. Create your own `.env` file to configure the application. Start with `.env-example`
 5. You can use vscode with the included configuration to get debugging support. You will need the following things:
-  - The vscode extension `vadimcn.vscode-lldb`
-  - lldb
+  * The vscode extension `vadimcn.vscode-lldb`
+  * lldb
 6. Run some tests: `cargo test`, or run the app: `cargo run`
 
-Clacks is mirrored on both Github and Sourcehut.
+Clacks is mirrored on both (Github)[https://github.com/dieff/clacks] and (Sourcehut)[https://git.sr.ht/~dieff/Clacks].
