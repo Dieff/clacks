@@ -1,6 +1,6 @@
 ---
 image: "ubuntu/latest"
-pacakges:
+packages:
   - rustc
   - cargo
   - libmariadb-dev-compat
