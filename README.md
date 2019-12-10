@@ -2,6 +2,8 @@
 
 A quick and easy backend for real-time chat applications.
 
+[![builds.sr.ht status](https://builds.sr.ht/~dieff/clacks.svg)](https://builds.sr.ht/~dieff/clacks?)
+
 Clacks provides
 - A graphql endpoint with subscription support. Clients can connect and be notified of new messages.
 - An api for automatic configuration from another server or backend.
@@ -68,4 +70,4 @@ Here are some steps to get up and running:
   * lldb
 6. Run some tests: `cargo test`, or run the app: `cargo run`
 
-Clacks is mirrored on both (Github)[https://github.com/dieff/clacks] and (Sourcehut)[https://git.sr.ht/~dieff/Clacks].
+Clacks is mirrored on both [Github](https://github.com/dieff/clacks) and [Sourcehut](https://git.sr.ht/~dieff/Clacks).

@@ -1,0 +1,12 @@
+---
+image: "ubuntu/latest"
+pacakges:
+  - rustc
+  - libmariadb-dev-compat
+tasks:
+  - build: |
+      cd clacks
+      cargo build
+  - test: |
+      cd clacks
+      cargo test -- --no-capture
