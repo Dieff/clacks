@@ -28,7 +28,7 @@ type MessageView {
 }
 
 type Query {
-  unread_messages: [Message]!
+  unreadMessages: [Message]!
   me: ID!
 }
 
@@ -39,6 +39,8 @@ input CreateMessageInput {
 
 type Mutation {
   createMessage(input: CreateMessageInput): Message
+  readMessage(message: ID!): Null
+  markAllAsRead: Null
 }
 
 type Subscription {

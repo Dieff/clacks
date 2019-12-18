@@ -63,6 +63,13 @@ fn main() -> std::io::Result<()> {
                 "message",
             ),
             Resolver::new(Box::new(resolvers::query_me), "Query", "me"),
+            Resolver::new(
+                Box::new(resolvers::mutation_read_message),
+                "Mutation",
+                "readMessage",
+            ),
+            Resolver::new(Box::new(resolvers::query_unread), "Query", "unreadMessages"),
+            Resolver::new(Box::new(resolvers::message_sender), "Message", "sender"),
         ])
         .unwrap();
 

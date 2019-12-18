@@ -70,10 +70,10 @@ pub fn r_type_ofkind<C>(
 }
 
 pub fn r_type_possibletypes<C>(
-  root: &BTreeMap<String, query::Value>,
+  _root: &BTreeMap<String, query::Value>,
   _args: GqlArgs,
   _ctx: &mut C,
-  schema: &GqlSchema<C>,
+  _schema: &GqlSchema<C>,
 ) -> ResResult {
   Ok(ResolutionReturn::Scalar(GqlValue::Null))
 }
@@ -125,7 +125,7 @@ pub fn r_type_interfaces<C>(
   root: &BTreeMap<String, query::Value>,
   _args: GqlArgs,
   _ctx: &mut C,
-  schema: &GqlSchema<C>,
+  _schema: &GqlSchema<C>,
 ) -> ResResult {
   // TODO: do we always need a name?
   match (root.get("kind"), root.get("name")) {

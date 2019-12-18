@@ -24,7 +24,7 @@ pub struct DbChannelMember {
   pub user_role: Option<String>,
 }
 
-#[derive(Queryable, PartialEq, Debug)]
+#[derive(Queryable, PartialEq, Debug, Clone)]
 pub struct DbMessage {
   pub id: i32,
   pub sender: String,
@@ -63,6 +63,21 @@ pub struct NewMessage<'a> {
   pub sender: &'a str,
   pub channel_id: i32,
   pub content: Option<&'a str>,
+}
+
+#[derive(Insertable)]
+#[table_name = "message_views"]
+pub struct NewMessageRead<'a> {
+  pub message_id: i32,
+  user: &'a str,
+}
+
+pub fn get_message(conn: &MysqlConnection, id: i32) -> QueryResult<Option<DbMessage>> {
+  let findings = messages::table.find(id).load::<DbMessage>(conn)?;
+  if findings.len() == 1 {
+    return Ok(Some(findings[0].clone()));
+  }
+  Ok(None)
 }
 
 pub fn create_channel(conn: &MysqlConnection, display_name: &str) -> QueryResult<DbChannel> {
@@ -105,11 +120,12 @@ pub fn create_message(
     content: Some(content),
   };
 
-  diesel::insert_into(messages::table)
-    .values(&new_message)
-    .execute(conn)?;
-
-  Ok(messages::table.order(messages::id.desc()).first(conn)?)
+  conn.transaction(|| {
+    diesel::insert_into(messages::table)
+      .values(&new_message)
+      .execute(conn)?;
+    Ok(messages::table.order(messages::id.desc()).first(conn)?)
+  })
 }
 
 pub fn get_channels(conn: &MysqlConnection) -> QueryResult<Vec<DbChannel>> {
@@ -118,10 +134,10 @@ pub fn get_channels(conn: &MysqlConnection) -> QueryResult<Vec<DbChannel>> {
 
 pub fn get_channel(conn: &MysqlConnection, channel_id: i32) -> QueryResult<Option<DbChannel>> {
   let ch = channels::table.find(channel_id).load::<DbChannel>(conn)?;
-  match ch.len() {
-    1 => Ok(Some(ch[0].clone())),
-    _ => Ok(None),
+  if ch.len() == 1 {
+    return Ok(Some(ch[0].clone()));
   }
+  Ok(None)
 }
 
 pub fn get_users_channels(conn: &MysqlConnection, user: &str) -> QueryResult<Vec<i32>> {
@@ -155,5 +171,41 @@ pub fn remove_user(conn: &MysqlConnection, channel: i32, user: &str) -> QueryRes
       .filter(channel_members::dsl::user.eq(user)),
   )
   .execute(conn)?;
+  Ok(())
+}
+
+pub fn mark_message_as_read(conn: &MysqlConnection, message: i32, user: &str) -> QueryResult<()> {
+  let new_msg_view = NewMessageRead {
+    message_id: message,
+    user,
+  };
+  diesel::insert_into(message_views::table)
+    .values(&new_msg_view)
+    .execute(conn)?;
+  Ok(())
+}
+
+pub fn get_unread(conn: &MysqlConnection, user: &str) -> QueryResult<Vec<i32>> {
+  let messages: Vec<i32> = messages::table
+    .left_join(message_views::table)
+    .filter(message_views::dsl::id.is_null())
+    .select(messages::id)
+    .load(conn)?;
+
+  Ok(messages)
+}
+
+pub fn mark_all_as_read(conn: &MysqlConnection, user: &str) -> QueryResult<()> {
+  let unread_messages = get_unread(conn, user)?;
+  let values: Vec<NewMessageRead> = unread_messages
+    .into_iter()
+    .map(|id| NewMessageRead {
+      message_id: id,
+      user,
+    })
+    .collect();
+  diesel::insert_into(message_views::table)
+    .values(&values)
+    .execute(conn)?;
   Ok(())
 }

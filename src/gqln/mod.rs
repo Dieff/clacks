@@ -280,11 +280,6 @@ impl<C> GqlSchema<C> {
             stack.push(ctx);
             continue 'outer;
           }
-          ResolutionReturn::List(l) => {
-            res_ctx
-              .data
-              .insert(field.name.to_owned(), GqlValue::List(l));
-          }
           ResolutionReturn::TypeList((gql_type, initial_values)) => {
             // After we push the current resolving type onto the stack,
             // the index of that will be the stack's current length.

@@ -32,7 +32,7 @@ impl AppConfig {
   }
   fn verify(&self) {
     if self.db_url.is_none() {
-      panic!("Missing database url");
+      panic!("Missing database url. Set it with the DATABASE_URL variable");
     }
     if self.jwt_secret.is_none() {
       panic!("No JWT verification secrets found. Set one with the `JWT_SECRET` variable.");

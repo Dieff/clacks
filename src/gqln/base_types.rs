@@ -71,9 +71,14 @@ impl MissingArgument {
   }
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct IOError {
+  message: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub enum ResolutionErr {
-  IO,
+  IO(IOError),
   QueryValidation(GqlQueryErr),
   SchemaIssue(GqlSchemaErr),
   QueryParseIssue(String),
@@ -104,6 +109,11 @@ impl ResolutionErr {
       name: arg_name.to_owned(),
     })
   }
+  pub fn io_err(msg: &str) -> Self {
+    Self::IO(IOError {
+      message: msg.to_owned(),
+    })
+  }
 }
 
 impl std::convert::From<GqlQueryErr> for ResolutionErr {
@@ -117,7 +127,6 @@ pub type GqlObj = BTreeMap<String, GqlValue>;
 #[derive(Debug, Clone)]
 pub enum ResolutionReturn {
   Scalar(query::Value),
-  List(Vec<GqlValue>),
   Type((String, GqlObj)),
   TypeList((String, Vec<GqlObj>)),
 }

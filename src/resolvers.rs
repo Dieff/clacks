@@ -1,4 +1,7 @@
+use diesel::prelude::*;
+use diesel::{mysql::MysqlConnection, r2d2::Error as DbConnsErr};
 use graphql_parser::query;
+use log::info;
 use std::collections::BTreeMap;
 use std::convert::TryInto;
 
@@ -6,7 +9,7 @@ use crate::gql_context::GqlContext;
 use crate::gqln::{
   GqlArgs, GqlObj, GqlRoot, GqlSchema, MissingArgument, ResResult, ResolutionErr, ResolutionReturn,
 };
-use crate::models::create_message;
+use crate::models::*;
 use crate::ws_actors::MsgMessageCreated;
 
 fn assert_arg_is_object<'a>(arg: &'a query::Value) -> Option<&'a GqlObj> {
@@ -37,14 +40,36 @@ fn assert_arg_is_number(arg: &query::Value) -> Option<i32> {
   }
 }
 
+fn assert_has_id(root: &GqlRoot) -> Result<String, ResolutionErr> {
+  let id = root
+    .get("id")
+    .ok_or(ResolutionErr::new_invalid_field("_", "id"))?;
+  Ok(
+    assert_arg_is_string(id)
+      .ok_or(ResolutionErr::new_invalid_field("_", "id"))?
+      .to_owned(),
+  )
+}
+
+impl From<r2d2::Error> for ResolutionErr {
+  fn from(_: r2d2::Error) -> Self {
+    Self::io_err("Timeout while waiting for database connections")
+  }
+}
+
+impl From<diesel::result::Error> for ResolutionErr {
+  fn from(e: diesel::result::Error) -> Self {
+    ResolutionErr::io_err(&format!("{:?}", e))
+  }
+}
+
 pub fn mutation_create_message(
   _root: &GqlRoot,
   args: GqlArgs,
   context: &mut GqlContext,
   _schema: &GqlSchema<GqlContext>,
 ) -> ResResult {
-  let input_err =
-    ResolutionErr::MissingArgument(MissingArgument::new("Mutation", "createMessage", "input"));
+  let input_err = ResolutionErr::new_missing_argument("Mutation", "createMessage", "input");
   let input =
     assert_arg_is_object(args.get("input").ok_or(input_err.clone())?).ok_or(input_err.clone())?;
   let msg_content = assert_arg_is_string(input.get("content").unwrap_or(&query::Value::Null))
@@ -56,17 +81,30 @@ pub fn mutation_create_message(
     .to_owned();
   let msg_channel = assert_arg_is_number(input.get("channel").ok_or(input_err.clone())?)
     .ok_or(input_err.clone())?;
-  let actor_message =
-    MsgMessageCreated::new(msg_channel, msg_content, context.cur_user.clone(), 100);
+
+  let conn: &MysqlConnection = &*context.db.get()?;
+  let new_msg = create_message(&conn, &context.cur_user, msg_channel, &msg_content)
+    .map_err(|_| ResolutionErr::io_err("Database error"))?;
+
+  let actor_message = MsgMessageCreated::new(
+    msg_channel,
+    msg_content.clone(),
+    context.cur_user.clone(),
+    100,
+  );
   context.ws_addr.do_send(actor_message);
+
   let mut bmap = GqlObj::new();
-  bmap.insert("id".to_owned(), query::Value::String("asdf".to_owned()));
+  bmap.insert(
+    "id".to_owned(),
+    query::Value::Int(query::Number::from(new_msg.id.to_owned())),
+  );
   Ok(ResolutionReturn::Type(("Message".to_owned(), bmap)))
 }
 
 pub fn subscription_message(
   root: &GqlRoot,
-  args: GqlArgs,
+  _: GqlArgs,
   context: &mut GqlContext,
   _schema: &GqlSchema<GqlContext>,
 ) -> ResResult {
@@ -88,5 +126,68 @@ pub fn query_me(
 ) -> ResResult {
   Ok(ResolutionReturn::Scalar(query::Value::String(
     context.cur_user.to_owned(),
+  )))
+}
+
+pub fn mutation_read_message(
+  _root: &GqlRoot,
+  args: GqlArgs,
+  context: &mut GqlContext,
+  _: &GqlSchema<GqlContext>,
+) -> ResResult {
+  let message_id = assert_arg_is_string(args.get("message").ok_or(
+    ResolutionErr::new_missing_argument("Mutation", "readMessage", "message"),
+  )?)
+  .ok_or(ResolutionErr::new_missing_argument(
+    "Mutation",
+    "readMessage",
+    "message",
+  ))?;
+
+  let msg: i32 = message_id
+    .parse()
+    .map_err(|_| ResolutionErr::new_missing_argument("Mutation", "readMessage", "message"))?;
+
+  let conn: &MysqlConnection = &*context.db.get()?;
+  mark_message_as_read(conn, msg, &context.cur_user)?;
+
+  Ok(ResolutionReturn::Scalar(query::Value::Null))
+}
+
+pub fn query_unread(
+  _root: &GqlRoot,
+  _args: GqlArgs,
+  context: &mut GqlContext,
+  _: &GqlSchema<GqlContext>,
+) -> ResResult {
+  let conn: &MysqlConnection = &*context.db.get()?;
+  let messages = get_unread(conn, &context.cur_user)?;
+  Ok(ResolutionReturn::TypeList((
+    "Message".to_owned(),
+    messages
+      .into_iter()
+      .map(|id| {
+        let mut bmap = BTreeMap::new();
+        bmap.insert("id".to_owned(), query::Value::String(format!("{}", id)));
+        bmap
+      })
+      .collect(),
+  )))
+}
+
+pub fn message_sender(
+  root: &GqlRoot,
+  _args: GqlArgs,
+  context: &mut GqlContext,
+  _: &GqlSchema<GqlContext>,
+) -> ResResult {
+  let msg_id: i32 = assert_has_id(root)?.parse().unwrap();
+  let conn: &MysqlConnection = &*context.db.get()?;
+  let message = get_message(conn, msg_id)?.ok_or(ResolutionErr::QueryResult(format!(
+    "Could not find message {}",
+    msg_id
+  )))?;
+  Ok(ResolutionReturn::Scalar(query::Value::String(
+    message.sender,
   )))
 }
